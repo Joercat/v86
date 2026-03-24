@@ -1,0 +1,461 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>32-bit Emulator</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.5.4/socket.io.min.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: system-ui, sans-serif; background: #111; color: #eee; height: 100vh; overflow: hidden; }
+        
+        .container { display: flex; height: 100vh; }
+        
+        .sidebar {
+            width: 240px; background: #1a1a1a; padding: 10px;
+            display: flex; flex-direction: column; border-right: 1px solid #333;
+            overflow-y: auto; flex-shrink: 0;
+        }
+        .sidebar.hidden { display: none; }
+        .sidebar h1 { font-size: 1em; color: #4af; margin-bottom: 10px; }
+        .sidebar h2 { font-size: 0.8em; color: #6af; margin: 8px 0 4px; border-bottom: 1px solid #333; padding-bottom: 2px; }
+        
+        label { font-size: 0.7em; color: #888; display: block; margin-bottom: 1px; }
+        select, input { width: 100%; padding: 4px; background: #222; border: 1px solid #444; color: #fff; border-radius: 2px; font-size: 0.8em; margin-bottom: 4px; }
+        
+        button { padding: 4px 8px; border: none; border-radius: 2px; cursor: pointer; font-size: 0.75em; }
+        .btn-blue { background: #2196f3; color: #fff; }
+        .btn-red { background: #f44; color: #fff; }
+        .btn-orange { background: #f90; color: #000; }
+        .btn-gray { background: #444; color: #ccc; }
+        button:disabled { opacity: 0.4; }
+        
+        .controls { display: flex; gap: 4px; margin-top: 4px; flex-wrap: wrap; }
+        
+        .upload { border: 2px dashed #444; padding: 8px; text-align: center; cursor: pointer; border-radius: 4px; font-size: 0.75em; margin-bottom: 4px; }
+        .upload:hover { border-color: #4af; }
+        
+        .isos { max-height: 80px; overflow-y: auto; }
+        .iso { display: flex; justify-content: space-between; background: #222; padding: 2px 4px; margin-bottom: 2px; font-size: 0.7em; border-radius: 2px; }
+        
+        .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; margin-top: auto; font-size: 0.65em; }
+        .stat { background: #222; padding: 3px; border-radius: 2px; }
+        .stat-val { color: #4af; font-weight: bold; }
+        
+        .main { flex: 1; display: flex; flex-direction: column; background: #000; min-width: 0; }
+        
+        .toolbar { display: flex; justify-content: space-between; padding: 4px 8px; background: #1a1a1a; border-bottom: 1px solid #333; }
+        .toolbar-side { display: flex; align-items: center; gap: 6px; }
+        
+        .status { display: flex; align-items: center; gap: 4px; font-size: 0.8em; }
+        .dot { width: 8px; height: 8px; border-radius: 50%; background: #555; }
+        .dot.on { background: #4c5; box-shadow: 0 0 4px #4c5; }
+        
+        .screen-wrap { flex: 1; display: flex; justify-content: center; align-items: center; background: #000; position: relative; overflow: hidden; }
+        
+        #screen { background: #000; image-rendering: pixelated; }
+        #screen.off { display: none; }
+        #screen.nocursor { cursor: none; }
+        
+        .placeholder { color: #333; text-align: center; }
+        .placeholder.off { display: none; }
+        .placeholder .icon { font-size: 3em; }
+        
+        .msg { position: absolute; bottom: 10px; left: 50%; transform: translateX(-50%); background: rgba(0,0,0,0.8); padding: 4px 12px; border-radius: 3px; font-size: 0.75em; opacity: 0; transition: opacity 0.2s; pointer-events: none; }
+        .msg.show { opacity: 1; }
+        .msg.captured { color: #4c5; }
+        
+        .toggle { position: fixed; left: 240px; top: 50%; transform: translateY(-50%); background: #222; border: 1px solid #444; color: #888; padding: 8px 2px; cursor: pointer; z-index: 100; border-radius: 0 2px 2px 0; }
+        .toggle.collapsed { left: 0; }
+        
+        .main:fullscreen .toolbar { position: absolute; top: 0; left: 0; right: 0; opacity: 0; transition: opacity 0.2s; z-index: 10; }
+        .main:fullscreen .toolbar:hover { opacity: 1; }
+        .main:fullscreen .screen-wrap { width: 100vw; height: 100vh; }
+        
+        .upload-progress { display: none; font-size: 0.7em; }
+        .progress-bar { height: 3px; background: #333; border-radius: 2px; margin-top: 2px; }
+        .progress-fill { height: 100%; background: #4af; width: 0; }
+    </style>
+</head>
+<body>
+    <button class="toggle" id="toggle">◀</button>
+    
+    <div class="container">
+        <aside class="sidebar" id="sidebar">
+            <h1>💻 Emulator</h1>
+            
+            <section>
+                <h2>📀 ISO</h2>
+                <div class="upload" id="uploadZone">📁 Drop or click<input type="file" id="fileInput" accept=".iso,.img" hidden></div>
+                <div class="upload-progress" id="uploadProgress">
+                    <div class="progress-bar"><div class="progress-fill" id="uploadFill"></div></div>
+                    <span id="uploadStatus"></span>
+                </div>
+                <div class="isos" id="isoList"></div>
+            </section>
+            
+            <section>
+                <h2>⚙️ Config</h2>
+                <label>ISO</label><select id="isoSelect"><option value="">None</option></select>
+                <label>RAM</label><input type="number" id="ram" value="512" min="64" max="2048" step="64">
+                <label>CPU</label><select id="cpu"><option value="pentium">Pentium</option><option value="pentium2">Pentium II</option><option value="pentium3" selected>Pentium III</option></select>
+                <label>Cores</label><select id="cores"><option>1</option><option selected>2</option></select>
+                <label>Machine</label><select id="machine"><option value="isapc">ISA</option><option value="pc" selected>PC</option></select>
+                <label>Disk</label><select id="disk"><option value="small">2GB</option><option value="medium">8GB</option><option value="large">20GB</option></select>
+                <label>Boot</label><select id="boot"><option value="cdrom">CD</option><option value="disk">Disk</option></select>
+                <div class="controls">
+                    <button class="btn-blue" id="startBtn">▶ Start</button>
+                    <button class="btn-red" id="stopBtn" disabled>⏹</button>
+                    <button class="btn-orange" id="resetBtn" disabled>↻</button>
+                </div>
+            </section>
+            
+            <section class="stats">
+                <div class="stat">CPU: <span class="stat-val" id="cpuStat">0%</span></div>
+                <div class="stat">RAM: <span class="stat-val" id="memStat">0</span></div>
+                <div class="stat">Disk: <span class="stat-val" id="diskStat">0</span></div>
+                <div class="stat">FPS: <span class="stat-val" id="fpsStat">0</span></div>
+            </section>
+        </aside>
+        
+        <main class="main" id="main">
+            <div class="toolbar">
+                <div class="toolbar-side">
+                    <div class="status"><div class="dot" id="dot"></div><span id="statusText">Ready</span></div>
+                </div>
+                <div class="toolbar-side">
+                    <button class="btn-gray" id="cadBtn" disabled style="font-size:0.65em;padding:2px 4px;">CAD</button>
+                    <button class="btn-gray" id="ssBtn" style="font-size:0.65em;padding:2px 4px;">📷</button>
+                    <select id="scale" style="font-size:0.65em;padding:1px;background:#333;color:#fff;border:1px solid #555;">
+                        <option value="fit">Fit</option>
+                        <option value="fill" selected>Fill</option>
+                        <option value="stretch">Stretch</option>
+                        <option value="1:1">1:1</option>
+                    </select>
+                    <button class="btn-gray" id="fsBtn" style="font-size:0.65em;padding:2px 4px;">⛶</button>
+                </div>
+            </div>
+            
+            <div class="screen-wrap" id="screenWrap">
+                <div class="placeholder" id="placeholder"><div class="icon">🖥️</div><p>Select ISO & Start</p></div>
+                <canvas id="screen" class="off" tabindex="0"></canvas>
+                <div class="msg" id="msg">Click to capture</div>
+            </div>
+        </main>
+    </div>
+
+<script>
+const $ = id => document.getElementById(id);
+const socket = io();
+
+const screen = $('screen');
+const ctx = screen.getContext('2d');
+const msg = $('msg');
+
+let running = false;
+let captured = false;
+let W = 640, H = 480;
+let fps = 0, lastFps = Date.now();
+
+// Key mappings
+const keyMap = {
+    8:0xff08,9:0xff09,13:0xff0d,16:0xffe1,17:0xffe3,18:0xffe9,
+    27:0xff1b,32:0x20,33:0xff55,34:0xff56,35:0xff57,36:0xff50,
+    37:0xff51,38:0xff52,39:0xff53,40:0xff54,45:0xff63,46:0xffff,
+    112:0xffbe,113:0xffbf,114:0xffc0,115:0xffc1,116:0xffc2,117:0xffc3,
+    118:0xffc4,119:0xffc5,120:0xffc6,121:0xffc7,122:0xffc8,123:0xffc9,
+    144:0xff7f,145:0xff14,19:0xff13,20:0xffe5,91:0xffeb,
+    96:0xffb0,97:0xffb1,98:0xffb2,99:0xffb3,100:0xffb4,
+    101:0xffb5,102:0xffb6,103:0xffb7,104:0xffb8,105:0xffb9,
+    106:0xffaa,107:0xffab,109:0xffad,110:0xffae,111:0xffaf,
+    186:0x3b,187:0x3d,188:0x2c,189:0x2d,190:0x2e,191:0x2f,
+    192:0x60,219:0x5b,220:0x5c,221:0x5d,222:0x27
+};
+const shiftMap = {
+    48:0x29,49:0x21,50:0x40,51:0x23,52:0x24,53:0x25,54:0x5e,55:0x26,56:0x2a,57:0x28,
+    186:0x3a,187:0x2b,188:0x3c,189:0x5f,190:0x3e,191:0x3f,
+    192:0x7e,219:0x7b,220:0x7c,221:0x7d,222:0x22
+};
+
+function keysym(e) {
+    const c = e.keyCode;
+    if (c >= 65 && c <= 90) return (e.shiftKey !== e.getModifierState('CapsLock')) ? c : c + 32;
+    if (e.shiftKey && shiftMap[c]) return shiftMap[c];
+    if (keyMap[c]) return keyMap[c];
+    return c;
+}
+
+// Socket
+socket.on('connect', () => $('statusText').textContent = 'Ready');
+socket.on('disconnect', () => { $('statusText').textContent = 'Disconnected'; $('dot').classList.remove('on'); });
+
+socket.on('status', d => {
+    running = d.running;
+    updateUI();
+    if (d.isos) updateIsos(d.isos);
+});
+
+socket.on('started', d => {
+    running = d.success;
+    if (running) {
+        screen.classList.remove('off');
+        $('placeholder').classList.add('off');
+    } else {
+        alert('Failed to start');
+    }
+    updateUI();
+});
+
+socket.on('stopped', () => {
+    running = false;
+    screen.classList.add('off');
+    $('placeholder').classList.remove('off');
+    release();
+    updateUI();
+});
+
+socket.on('frame', d => {
+    fps++;
+    const now = Date.now();
+    if (now - lastFps >= 1000) {
+        $('fpsStat').textContent = fps;
+        fps = 0;
+        lastFps = now;
+    }
+    
+    const img = new Image();
+    img.onload = () => {
+        if (screen.width !== d.width || screen.height !== d.height) {
+            screen.width = W = d.width;
+            screen.height = H = d.height;
+            applyScale();
+        }
+        ctx.drawImage(img, 0, 0);
+    };
+    img.src = 'data:image/jpeg;base64,' + d.data;
+});
+
+function updateUI() {
+    $('startBtn').disabled = running;
+    $('stopBtn').disabled = !running;
+    $('resetBtn').disabled = !running;
+    $('cadBtn').disabled = !running;
+    $('dot').classList.toggle('on', running);
+    $('statusText').textContent = running ? 'Running' : 'Stopped';
+}
+
+function updateIsos(list) {
+    const sel = $('isoSelect');
+    const cur = sel.value;
+    sel.innerHTML = '<option value="">None</option>';
+    $('isoList').innerHTML = '';
+    list.forEach(iso => {
+        sel.innerHTML += `<option value="${iso.name}">${iso.name} (${iso.size}MB)</option>`;
+        $('isoList').innerHTML += `<div class="iso"><span>${iso.name}</span><button class="btn-red" onclick="delIso('${iso.name}')" style="padding:0 3px;font-size:0.6em;">×</button></div>`;
+    });
+    sel.value = cur;
+}
+
+function getConfig() {
+    return {
+        iso: $('isoSelect').value || null,
+        ram: +$('ram').value || 512,
+        cores: +$('cores').value || 2,
+        cpu_model: $('cpu').value,
+        machine: $('machine').value,
+        vga: 'std',
+        disk_size: $('disk').value,
+        boot: $('boot').value,
+        performance: 'speed'
+    };
+}
+
+// Capture
+function capture() {
+    if (!running) return;
+    captured = true;
+    screen.classList.add('nocursor');
+    msg.textContent = '🎮 Captured - ESC to release';
+    msg.classList.add('show', 'captured');
+    screen.focus();
+}
+
+function release() {
+    captured = false;
+    screen.classList.remove('nocursor');
+    msg.classList.remove('show', 'captured');
+}
+
+// Buttons
+$('startBtn').onclick = () => { $('statusText').textContent = 'Starting...'; socket.emit('start', getConfig()); };
+$('stopBtn').onclick = () => socket.emit('stop');
+$('resetBtn').onclick = () => socket.emit('reset');
+$('cadBtn').onclick = () => socket.emit('ctrl_alt_del');
+
+// Mouse position
+function mousePos(e) {
+    const r = screen.getBoundingClientRect();
+    const sx = W / r.width;
+    const sy = H / r.height;
+    return {
+        x: Math.round(Math.max(0, Math.min((e.clientX - r.left) * sx, W - 1))),
+        y: Math.round(Math.max(0, Math.min((e.clientY - r.top) * sy, H - 1)))
+    };
+}
+
+function btns(e) {
+    let b = 0;
+    if (e.buttons & 1) b |= 1;
+    if (e.buttons & 2) b |= 4;
+    if (e.buttons & 4) b |= 2;
+    return b;
+}
+
+// Screen events
+screen.onmouseenter = () => { if (running && !captured) { msg.textContent = 'Click to capture'; msg.classList.add('show'); } };
+screen.onmouseleave = () => { if (!captured) msg.classList.remove('show'); };
+
+screen.onmousedown = e => {
+    if (!running) return;
+    e.preventDefault();
+    if (!captured) { capture(); return; }
+    const p = mousePos(e);
+    socket.emit('mouse', { x: p.x, y: p.y, buttons: btns(e) });
+};
+
+screen.onmouseup = e => {
+    if (!running || !captured) return;
+    e.preventDefault();
+    const p = mousePos(e);
+    socket.emit('mouse', { x: p.x, y: p.y, buttons: btns(e) });
+};
+
+screen.onmousemove = e => {
+    if (!running || !captured) return;
+    const p = mousePos(e);
+    socket.emit('mouse', { x: p.x, y: p.y, buttons: btns(e) });
+};
+
+screen.onwheel = e => {
+    if (!running || !captured) return;
+    e.preventDefault();
+    const p = mousePos(e);
+    const b = e.deltaY < 0 ? 8 : 16;
+    socket.emit('mouse', { x: p.x, y: p.y, buttons: b });
+    setTimeout(() => socket.emit('mouse', { x: p.x, y: p.y, buttons: 0 }), 30);
+};
+
+screen.oncontextmenu = e => e.preventDefault();
+
+// Keyboard
+document.onkeydown = e => {
+    if (!running) return;
+    if (e.key === 'Escape' && captured) { release(); return; }
+    if (!captured) return;
+    e.preventDefault();
+    e.stopPropagation();
+    socket.emit('key', { keysym: keysym(e), down: true });
+};
+
+document.onkeyup = e => {
+    if (!running || !captured) return;
+    e.preventDefault();
+    e.stopPropagation();
+    socket.emit('key', { keysym: keysym(e), down: false });
+};
+
+// Upload
+$('uploadZone').onclick = () => $('fileInput').click();
+$('uploadZone').ondragover = e => { e.preventDefault(); $('uploadZone').style.borderColor = '#4af'; };
+$('uploadZone').ondragleave = () => $('uploadZone').style.borderColor = '#444';
+$('uploadZone').ondrop = e => { e.preventDefault(); $('uploadZone').style.borderColor = '#444'; if (e.dataTransfer.files[0]) upload(e.dataTransfer.files[0]); };
+$('fileInput').onchange = () => { if ($('fileInput').files[0]) upload($('fileInput').files[0]); };
+
+function upload(file) {
+    const fd = new FormData();
+    fd.append('file', file);
+    $('uploadProgress').style.display = 'block';
+    
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', '/api/upload');
+    xhr.upload.onprogress = e => {
+        if (e.lengthComputable) {
+            const p = Math.round(e.loaded / e.total * 100);
+            $('uploadFill').style.width = p + '%';
+            $('uploadStatus').textContent = p + '%';
+        }
+    };
+    xhr.onload = () => {
+        $('uploadStatus').textContent = xhr.status === 200 ? 'Done!' : 'Error';
+        setTimeout(() => { $('uploadProgress').style.display = 'none'; refreshIsos(); }, 800);
+    };
+    xhr.send(fd);
+}
+
+window.delIso = name => { if (confirm('Delete ' + name + '?')) fetch('/api/delete/' + encodeURIComponent(name), { method: 'DELETE' }).then(refreshIsos); };
+function refreshIsos() { fetch('/api/isos').then(r => r.json()).then(updateIsos); }
+
+// Stats
+setInterval(() => {
+    fetch('/api/stats').then(r => r.json()).then(s => {
+        $('cpuStat').textContent = s.cpu_percent + '%';
+        $('memStat').textContent = s.memory_used + 'MB';
+        $('diskStat').textContent = s.disk_used + 'GB';
+    }).catch(() => {});
+}, 2000);
+
+// Scale
+function applyScale() {
+    const mode = $('scale').value;
+    const wrap = $('screenWrap');
+    const wr = wrap.getBoundingClientRect();
+    
+    if (mode === 'fit') {
+        const s = Math.min(wr.width / W, wr.height / H);
+        screen.style.width = (W * s) + 'px';
+        screen.style.height = (H * s) + 'px';
+    } else if (mode === 'fill') {
+        const s = Math.min(wr.width / W, wr.height / H);
+        screen.style.width = (W * s) + 'px';
+        screen.style.height = (H * s) + 'px';
+    } else if (mode === 'stretch') {
+        screen.style.width = '100%';
+        screen.style.height = '100%';
+    } else {
+        screen.style.width = W + 'px';
+        screen.style.height = H + 'px';
+    }
+}
+
+$('scale').onchange = applyScale;
+window.onresize = applyScale;
+
+// Fullscreen
+$('fsBtn').onclick = () => {
+    if (document.fullscreenElement) document.exitFullscreen();
+    else $('main').requestFullscreen().then(applyScale);
+};
+
+// Screenshot
+$('ssBtn').onclick = () => {
+    if (!running) return;
+    const a = document.createElement('a');
+    a.download = 'screenshot.png';
+    a.href = screen.toDataURL();
+    a.click();
+};
+
+// Sidebar toggle
+$('toggle').onclick = () => {
+    const hidden = $('sidebar').classList.toggle('hidden');
+    $('toggle').textContent = hidden ? '▶' : '◀';
+    $('toggle').classList.toggle('collapsed', hidden);
+    setTimeout(applyScale, 100);
+};
+
+// Init
+refreshIsos();
+setTimeout(applyScale, 100);
+</script> 
+</body>
+</html>
