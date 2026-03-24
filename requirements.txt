@@ -1,0 +1,6 @@
+flask==2.3.3
+flask-socketio==5.3.6
+eventlet==0.33.3
+pillow==10.0.1
+psutil==5.9.5
+werkzeug==2.3.7 
